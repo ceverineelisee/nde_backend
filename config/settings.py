@@ -281,6 +281,9 @@ EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='NDE Location <noreply@nde.com>')
 
+# Durée de validité des liens de réinitialisation de mot de passe (24h).
+PASSWORD_RESET_TIMEOUT = 60 * 60 * 24
+
 # URLs publiques (callback serveur KPay, retour passerelle éventuel).
 BACKEND_PUBLIC_URL = config("BACKEND_PUBLIC_URL", default="http://127.0.0.1:8002")
 FRONTEND_PUBLIC_URL = config("FRONTEND_PUBLIC_URL", default="http://localhost:8080")
