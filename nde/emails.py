@@ -220,6 +220,44 @@ def send_verification_rejected_email(user, notes=''):
         print(f"Erreur envoi email rejet: {e}")
 
 
+def send_password_reset_email(user, reset_link):
+    """Email envoyé lors d'une demande de réinitialisation de mot de passe."""
+    name = _get_display_name(user)
+
+    content = f"""
+    <h2 style="color:#1e293b;margin:0 0 16px;font-size:22px">Réinitialisation de mot de passe</h2>
+    <p style="color:#475569;font-size:15px;line-height:1.7;margin:0 0 20px">
+      Bonjour {name}, vous avez demandé la réinitialisation du mot de passe de votre compte NDE Location.
+    </p>
+    <div style="text-align:center;margin:0 0 24px">
+      <a href="{reset_link}" style="display:inline-block;padding:14px 32px;background:#2563eb;color:#ffffff;border-radius:999px;text-decoration:none;font-size:15px;font-weight:600">
+        Réinitialiser mon mot de passe
+      </a>
+    </div>
+    <p style="color:#475569;font-size:15px;line-height:1.7;margin:0 0 20px">
+      Ce lien est valable 24 heures. Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email :
+      votre mot de passe restera inchangé.
+    </p>
+    <p style="color:#94a3b8;font-size:13px;line-height:1.6;margin:0">
+      Si le bouton ne fonctionne pas, copiez ce lien dans votre navigateur :<br>
+      <a href="{reset_link}" style="color:#2563eb;word-break:break-all">{reset_link}</a>
+    </p>
+    """
+    html = _base_html(content)
+
+    try:
+        send_mail(
+            subject="Réinitialisation de votre mot de passe - NDE Location",
+            message=f"Bonjour {name}, réinitialisez votre mot de passe en suivant ce lien : {reset_link}",
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html,
+            fail_silently=True,
+        )
+    except Exception as e:
+        print(f"Erreur envoi email réinitialisation mot de passe: {e}")
+
+
 def send_listing_removed_email(user, maison, reason=''):
     """Email envoyé quand une annonce est retirée par un administrateur."""
     name = _get_display_name(user)

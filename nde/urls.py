@@ -9,10 +9,14 @@ from nde.view.views import (
     UserDocumentsView,
     UpdateProfileView,
     AcceptTermsView,
+    ForgotPasswordView,
+    ResetPasswordView,
+    ChangePasswordView,
 )
 from nde.view.admin_views import (
     AdminDashboardStatsView,
     AdminUsersListView,
+    AdminCreateAdminView,
     AdminUserDetailView,
     AdminVerifyUserView,
     AdminToggleUserActiveView,
@@ -57,6 +61,9 @@ router = DefaultRouter()
 custom_urlpatterns = [
     path("auth/google/", GoogleLogin.as_view(), name="google-login"),
     path("auth/login/", EmailLoginView.as_view(), name="email-login"),
+    path("auth/password-reset/", ForgotPasswordView.as_view(), name="password-reset"),
+    path("auth/password-reset/confirm/", ResetPasswordView.as_view(), name="password-reset-confirm"),
+    path("auth/change-password/", ChangePasswordView.as_view(), name="change-password"),
     path("update-onboarding/", UpdateOnboardingView.as_view(), name="update-onboarding"),
     path("verification/upload/", DocumentUploadView.as_view(), name="document-upload"),
     path("verification/documents/", UserDocumentsView.as_view(), name="user-documents"),
@@ -101,6 +108,7 @@ custom_urlpatterns = [
     # Admin
     path("admin/stats/", AdminDashboardStatsView.as_view(), name="admin-stats"),
     path("admin/users/", AdminUsersListView.as_view(), name="admin-users"),
+    path("admin/users/create-admin/", AdminCreateAdminView.as_view(), name="admin-create-admin"),
     path("admin/users/<uuid:user_id>/", AdminUserDetailView.as_view(), name="admin-user-detail"),
     path("admin/users/<uuid:user_id>/verify/", AdminVerifyUserView.as_view(), name="admin-verify-user"),
     path("admin/users/<uuid:user_id>/toggle-active/", AdminToggleUserActiveView.as_view(), name="admin-toggle-active"),

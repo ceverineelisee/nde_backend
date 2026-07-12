@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 
 from nde.models import RemoteUser, UserVerificationDocument, Maison, DocumentMaison, OwnerNotification
 from nde.serializers.users.usersSerializer import RemoteUserSerializer
+from nde.serializers.admin_serializers import AdminCreateAdminSerializer
 from nde.listing_access import start_trial_if_eligible
 from nde.emails import (
     send_verification_approved_email,
@@ -23,6 +24,16 @@ class IsAdmin(IsAuthenticated):
         return super().has_permission(request, view) and (
             request.user.role == 'admin' or request.user.is_superuser
         )
+
+
+class IsSuperUser(IsAuthenticated):
+    """
+    Réservé aux superusers Django (créés via `createsuperuser`, hors app).
+    Utilisé pour les actions sensibles d'élévation de privilèges (création d'admins) :
+    un compte admin "ordinaire" compromis ne doit pas pouvoir en créer d'autres.
+    """
+    def has_permission(self, request, view):
+        return super().has_permission(request, view) and request.user.is_superuser
 
 
 class AdminDashboardStatsView(APIView):
@@ -86,20 +97,50 @@ class AdminUsersListView(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
-        role = request.query_params.get('role')
+        role_filter = request.query_params.get('role')
         verification = request.query_params.get('verification_status')
         search = request.query_params.get('search', '')
 
         qs = RemoteUser.objects.all().order_by('-created_at')
-        if role:
-            qs = qs.filter(role=role)
+        if role_filter:
+            if role_filter not in RemoteUser.Roles.values:
+                return Response({'error': 'Rôle invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+            qs = qs.filter(role=role_filter)
         if verification:
+            if verification not in RemoteUser.VerificationStatus.values:
+                return Response({'error': 'Statut de vérification invalide.'}, status=status.HTTP_400_BAD_REQUEST)
             qs = qs.filter(verification_status=verification)
         if search:
             qs = qs.filter(Q(name__icontains=search) | Q(email__icontains=search))
 
         data = RemoteUserSerializer(qs, many=True).data
         return Response(data)
+
+
+class AdminCreateAdminView(APIView):
+    """
+    Crée un nouveau compte administrateur.
+    Réservé aux superusers (pas à tout compte role='admin') pour limiter le risque
+    de prolifération de comptes admin en cas de compromission d'un compte admin ordinaire.
+    """
+    permission_classes = [IsSuperUser]
+
+    def post(self, request):
+        serializer = AdminCreateAdminSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        user = RemoteUser.objects.create_user(
+            email=data['email'],
+            name=data['name'],
+            password=data['password'],
+            role=RemoteUser.Roles.ADMIN,
+            is_staff=True,
+            is_onboarding_complete=True,
+        )
+
+        return Response(RemoteUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
 class AdminUserDetailView(APIView):
