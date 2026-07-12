@@ -1,0 +1,150 @@
+
+services:
+  # --- Service Base de Données ---
+  nde-db:
+    image: postgres:15-alpine
+    container_name: nde-db
+    environment:
+      # Lit les variables standard de l'image Postgres depuis .env
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      # Port Hôte (unique) -> Port Conteneur (fixe)
+      - "${DB_PORT}:5432"
+    networks:
+      - nde-network
+    volumes:
+      - nde-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nde_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Service Cache/Broker Redis (utilisé par Celery) ---
+  nde-redis:
+    image: redis:7-alpine
+    container_name: nde-redis
+    networks:
+      - nde-network
+    volumes:
+      - nde-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # --- Service Backend (Django/FastAPI) ---
+  nde-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nde-backend
+    env_file: .env # Charge toutes les variables du .env
+    # entrypoint: ["/bin/sh", "-c", "tail -f /dev/null"]
+    environment:
+      # Surcharge le host pour pointer vers le service nde-db
+      - POSTGRES_HOST=nde-db
+      - CELERY_BROKER_URL=redis://nde-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://nde-redis:6379/0
+    ports:
+      # Port Hôte (unique) -> Port Conteneur (fixe)
+      - "${BACKEND_PORT}:8000"
+    depends_on:
+      nde-db:
+        condition: service_healthy
+      nde-redis:
+        condition: service_healthy
+    networks:
+      - nde-network
+    volumes:
+      # "bind mount": synchronisation "code local" -> "conteneur" en temps réel.
+      # A supprimer en prod car inutile.
+      - .:/app
+      # Volume pour les fichiers uploadés (ex: avatars)
+      - nde-media-data:/app/media
+      # Volume pour les fichiers statiques (servis par Nginx en prod)
+      - nde-static-data:/app/staticfiles
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/nde/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # labels:
+    #   # --- Labels Traefik pour la découverte ---
+    #   - "traefik.enable=true"
+    #   - "traefik.docker.network=nde-network"
+
+    #   # --- Route 1: Path-based (ex: localhost/api/rbac) ---
+    #   - "traefik.http.routers.nde-path.rule=Host(`localhost`) && PathPrefix(`/api/nde`) || Host(`172-39-1-27.traefik.me`) && PathPrefix(`/api/nde`)"
+    #   - "traefik.http.routers.nde-path.priority=90" # ex: 98
+    #   - "traefik.http.routers.nde-path.entrypoints=web"
+    #   - "traefik.http.routers.nde-path.service=nde-svc" # Pointe vers le service virtuel
+
+    #   # --- Route 2: Subdomain-based (ex: rbac.localhost) ---
+    #   - "traefik.http.routers.nde-subdomain.rule=Host(`nde.localhost`) || Host(`nde.172-39-1-27.traefik.me`)"
+    #   - "traefik.http.routers.nde-subdomain.priority=50"
+    #   - "traefik.http.routers.nde-subdomain.entrypoints=web"
+    #   - "traefik.http.routers.nde-subdomain.service=nde-svc" # Pointe vers le service virtuel
+
+    #   # --- Définition du service virtuel Traefik ---
+    #   # "Ce conteneur, sur son port 8000, s'appelle nde-svc"
+    #   - "traefik.http.services.nde-svc.loadbalancer.server.port=8000"
+      
+    #   # --- Middlewares (définis dans la gateway) ---
+    #   - "traefik.http.routers.nde-path.middlewares=cors-headers@file,compress@file"
+    #   - "traefik.http.routers.nde-subdomain.middlewares=cors-headers@file,compress@file"
+
+  # --- CELERY WORKER ---
+  nde-worker:
+    build: .
+    container_name: nde-worker
+    # Il utilise le même code et le même .env que le backend
+    env_file: .env
+    environment:
+      - POSTGRES_HOST=nde-db
+      - CELERY_BROKER_URL=redis://nde-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://nde-redis:6379/0
+      # nde-backend a déjà migré la base au démarrage ; ce service ne doit pas
+      # relancer "migrate" en parallèle (course sur la création des tables).
+      - RUN_MIGRATIONS=false
+    # La commande qui LANCE le worker
+    # "config" est le nom de votre projet Django (où se trouve celery.py)
+    command: >
+      sh -c "celery -A config worker --loglevel=info"
+    networks:
+      - nde-network
+    volumes:
+      - .:/app # Pour le live-reload en dev
+    depends_on:
+      nde-backend:
+        condition: service_healthy
+      nde-db:
+        condition: service_healthy
+      nde-redis:
+        condition: service_healthy
+    restart: unless-stopped
+ 
+
+# --- Réseau Interne---
+networks:
+  nde-network:
+    driver: bridge
+
+# --- Volumes Persistants ---
+volumes:
+  nde-postgres-data:
+    name: nde-postgres-data
+  nde-redis-data:
+    name: nde-redis-data
+  nde-media-data:
+    name: nde-media-data
+  nde-static-data:
+    name: nde-static-data
+
