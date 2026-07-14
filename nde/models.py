@@ -295,6 +295,16 @@ class Maison(BaseModel):
     code_postal = models.CharField(max_length=10)
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
+    publication_latitude = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Position GPS de l'appareil au moment de la création de l'annonce (traçabilité anti-fraude).",
+    )
+    publication_longitude = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="Position GPS de l'appareil au moment de la création de l'annonce (traçabilité anti-fraude).",
+    )
 
     STATUT_PUBLICATION = [
         ("brouillon", "Brouillon"),

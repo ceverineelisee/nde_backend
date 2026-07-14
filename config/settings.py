@@ -308,6 +308,12 @@ LISTING_AGENCE_SUBSCRIPTION_PRICE_XAF = config(
 LISTING_SUBSCRIPTION_DAYS = config("LISTING_SUBSCRIPTION_DAYS", default=30, cast=int)
 LISTING_TRIAL_DAYS = config("LISTING_TRIAL_DAYS", default=14, cast=int)
 
+# Géocodage des adresses (nde/geocoding.py). Utilise LocationIQ si une clé est configurée
+# (5000 req/jour, 2 req/s, usage commercial autorisé) ; sans clé, retombe sur Nominatim/OSM
+# en accès direct (1 req/s, usage commercial intensif non autorisé sans auto-hébergement —
+# adapté au développement local uniquement). Clé gratuite : https://locationiq.com
+LOCATIONIQ_API_KEY = config("LOCATIONIQ_API_KEY", default="")
+
 # KPay Sandbox / prod — docs officielles (X-API-Key + X-Secret-Key, POST /api/v1/payments/init).
 KPAY_API_BASE_URL = config("KPAY_API_BASE_URL", default="https://admin.kpay.site")
 KPAY_HTTP_TIMEOUT_SECONDS = config("KPAY_HTTP_TIMEOUT_SECONDS", default=30, cast=int)

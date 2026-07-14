@@ -15,12 +15,16 @@ from nde.view.views import (
 )
 from nde.view.admin_views import (
     AdminDashboardStatsView,
+    AdminBillingStatsView,
+    AdminBillingTransactionsView,
     AdminUsersListView,
     AdminCreateAdminView,
     AdminUserDetailView,
     AdminVerifyUserView,
     AdminToggleUserActiveView,
     AdminDocumentsListView,
+    AdminMaisonsListView,
+    AdminCommentsListView,
     AdminRemoveFraudulentMaisonView,
 )
 from nde.view.public_views import (
@@ -45,6 +49,7 @@ from nde.view.comment_views import (
     CommentaireDeleteView,
 )
 from nde.view.owner_views import (
+    GeocodePreviewView,
     OwnerDashboardStatsView,
     OwnerMaisonsListView,
     OwnerMaisonDetailView,
@@ -107,15 +112,20 @@ custom_urlpatterns = [
 
     # Admin
     path("admin/stats/", AdminDashboardStatsView.as_view(), name="admin-stats"),
+    path("admin/billing/stats/", AdminBillingStatsView.as_view(), name="admin-billing-stats"),
+    path("admin/billing/transactions/", AdminBillingTransactionsView.as_view(), name="admin-billing-transactions"),
     path("admin/users/", AdminUsersListView.as_view(), name="admin-users"),
     path("admin/users/create-admin/", AdminCreateAdminView.as_view(), name="admin-create-admin"),
     path("admin/users/<uuid:user_id>/", AdminUserDetailView.as_view(), name="admin-user-detail"),
     path("admin/users/<uuid:user_id>/verify/", AdminVerifyUserView.as_view(), name="admin-verify-user"),
     path("admin/users/<uuid:user_id>/toggle-active/", AdminToggleUserActiveView.as_view(), name="admin-toggle-active"),
     path("admin/documents/", AdminDocumentsListView.as_view(), name="admin-documents"),
+    path("admin/maisons/", AdminMaisonsListView.as_view(), name="admin-maisons"),
     path("admin/maisons/<uuid:maison_id>/remove-fraud/", AdminRemoveFraudulentMaisonView.as_view(), name="admin-remove-fraudulent-maison"),
+    path("admin/commentaires/", AdminCommentsListView.as_view(), name="admin-comments"),
 
     # Propriétaire / Agence
+    path("owner/geocode-preview/", GeocodePreviewView.as_view(), name="owner-geocode-preview"),
     path("owner/stats/", OwnerDashboardStatsView.as_view(), name="owner-stats"),
     path("owner/maisons/", OwnerMaisonsListView.as_view(), name="owner-maisons"),
     path("owner/maisons/<uuid:maison_id>/", OwnerMaisonDetailView.as_view(), name="owner-maison-detail"),

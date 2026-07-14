@@ -1,4 +1,4 @@
-from django.db.models import Count, Q
+from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from datetime import timedelta
@@ -7,10 +7,20 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from nde.models import RemoteUser, UserVerificationDocument, Maison, DocumentMaison, OwnerNotification
+from nde.models import (
+    RemoteUser,
+    UserVerificationDocument,
+    Maison,
+    DocumentMaison,
+    OwnerNotification,
+    ContactAccessPayment,
+    ListingSubscriptionPayment,
+    Commentaire,
+)
 from nde.serializers.users.usersSerializer import RemoteUserSerializer
 from nde.serializers.admin_serializers import AdminCreateAdminSerializer
 from nde.listing_access import start_trial_if_eligible
+from nde.view.public_views import haversine_km
 from nde.emails import (
     send_verification_approved_email,
     send_verification_rejected_email,
@@ -90,6 +100,159 @@ class AdminDashboardStatsView(APIView):
             'maisons_en_attente': maisons_en_attente,
             'registrations_chart': registrations_chart,
             'recent_users': recent_users_data,
+        })
+
+
+def _payment_serialize(payment, type_label):
+    return {
+        'id': str(payment.id),
+        'type': type_label,
+        'user': {
+            'id': str(payment.user_id),
+            'name': payment.user.name,
+            'email': payment.user.email,
+        },
+        'amount_xaf': payment.amount_xaf,
+        'status': payment.status,
+        'status_display': payment.get_status_display(),
+        'merchant_reference': payment.merchant_reference,
+        'kpay_transaction_id': payment.kpay_transaction_id,
+        'created_at': payment.created_at,
+        'completed_at': payment.completed_at,
+    }
+
+
+class AdminBillingStatsView(APIView):
+    """
+    Vue d'ensemble de la facturation : chiffre d'affaires (pass contacts + abonnements
+    annonces), payé via KPay, agrégé sur l'ensemble et sur les 30/7 derniers jours.
+    """
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        now = timezone.now()
+        thirty_days_ago = now - timedelta(days=30)
+        seven_days_ago = now - timedelta(days=7)
+
+        contact_paid = ContactAccessPayment.objects.filter(
+            status=ContactAccessPayment.Status.PAID
+        )
+        listing_paid = ListingSubscriptionPayment.objects.filter(
+            status=ListingSubscriptionPayment.Status.PAID
+        )
+
+        def total_amount(qs):
+            return qs.aggregate(total=Sum('amount_xaf'))['total'] or 0
+
+        contact_revenue = total_amount(contact_paid)
+        listing_revenue = total_amount(listing_paid)
+
+        revenue_30d = (
+            total_amount(contact_paid.filter(completed_at__gte=thirty_days_ago))
+            + total_amount(listing_paid.filter(completed_at__gte=thirty_days_ago))
+        )
+        revenue_7d = (
+            total_amount(contact_paid.filter(completed_at__gte=seven_days_ago))
+            + total_amount(listing_paid.filter(completed_at__gte=seven_days_ago))
+        )
+
+        contact_counts = dict(
+            ContactAccessPayment.objects.values_list('status').annotate(c=Count('id')).values_list('status', 'c')
+        )
+        listing_counts = dict(
+            ListingSubscriptionPayment.objects.values_list('status').annotate(c=Count('id')).values_list('status', 'c')
+        )
+
+        def daily_revenue(qs):
+            rows = (
+                qs.filter(completed_at__gte=thirty_days_ago)
+                .annotate(date=TruncDate('completed_at'))
+                .values('date')
+                .annotate(total=Sum('amount_xaf'))
+            )
+            return {r['date']: r['total'] for r in rows}
+
+        contact_daily = daily_revenue(contact_paid)
+        listing_daily = daily_revenue(listing_paid)
+        all_dates = sorted(set(contact_daily) | set(listing_daily))
+        revenue_chart = [
+            {
+                'date': d.isoformat(),
+                'total': (contact_daily.get(d) or 0) + (listing_daily.get(d) or 0),
+            }
+            for d in all_dates
+        ]
+
+        return Response({
+            'total_revenue_xaf': contact_revenue + listing_revenue,
+            'contact_access_revenue_xaf': contact_revenue,
+            'listing_subscription_revenue_xaf': listing_revenue,
+            'revenue_30d_xaf': revenue_30d,
+            'revenue_7d_xaf': revenue_7d,
+            'contact_access_counts': contact_counts,
+            'listing_subscription_counts': listing_counts,
+            'revenue_chart': revenue_chart,
+        })
+
+
+class AdminBillingTransactionsView(APIView):
+    """Liste unifiée et paginée des transactions KPay (pass contacts + abonnements annonces)."""
+    permission_classes = [IsAdmin]
+
+    VALID_TYPES = ('contact_access', 'listing_subscription')
+
+    def get(self, request):
+        type_filter = request.query_params.get('type')
+        status_filter = request.query_params.get('status')
+        search = request.query_params.get('search', '').strip()
+
+        if type_filter and type_filter not in self.VALID_TYPES:
+            return Response({'error': 'Type invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+        valid_statuses = set(ContactAccessPayment.Status.values)
+        if status_filter and status_filter not in valid_statuses:
+            return Response({'error': 'Statut invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get('page_size', 25))))
+        except ValueError:
+            page_size = 25
+
+        transactions = []
+
+        if type_filter != 'listing_subscription':
+            qs = ContactAccessPayment.objects.select_related('user').all()
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            if search:
+                qs = qs.filter(Q(user__name__icontains=search) | Q(user__email__icontains=search))
+            transactions.extend(_payment_serialize(p, 'contact_access') for p in qs)
+
+        if type_filter != 'contact_access':
+            qs = ListingSubscriptionPayment.objects.select_related('user').all()
+            if status_filter:
+                qs = qs.filter(status=status_filter)
+            if search:
+                qs = qs.filter(Q(user__name__icontains=search) | Q(user__email__icontains=search))
+            transactions.extend(_payment_serialize(p, 'listing_subscription') for p in qs)
+
+        transactions.sort(key=lambda t: t['created_at'], reverse=True)
+
+        total = len(transactions)
+        start_idx = (page - 1) * page_size
+        page_items = transactions[start_idx:start_idx + page_size]
+        for item in page_items:
+            item['created_at'] = item['created_at'].isoformat()
+            item['completed_at'] = item['completed_at'].isoformat() if item['completed_at'] else None
+
+        return Response({
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+            'results': page_items,
         })
 
 
@@ -287,6 +450,155 @@ class AdminToggleUserActiveView(APIView):
             'is_active': user.is_active,
             'deactivation_reason': user.deactivation_reason,
             'message': f"Utilisateur {'activé' if user.is_active else 'désactivé'}.",
+        })
+
+
+class AdminMaisonsListView(APIView):
+    """Liste paginée de toutes les annonces (tous statuts) pour modération admin."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        statut_filter = request.query_params.get('statut')
+        search = request.query_params.get('search', '').strip()
+
+        valid_statuts = {c[0] for c in Maison.STATUT_PUBLICATION}
+        if statut_filter and statut_filter not in valid_statuts:
+            return Response({'error': 'Statut invalide.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get('page_size', 25))))
+        except ValueError:
+            page_size = 25
+
+        qs = Maison.objects.select_related('proprietaire').prefetch_related('photos').all()
+        if statut_filter:
+            qs = qs.filter(statut=statut_filter)
+        if search:
+            qs = qs.filter(
+                Q(titre__icontains=search)
+                | Q(ville__icontains=search)
+                | Q(proprietaire__name__icontains=search)
+                | Q(proprietaire__email__icontains=search)
+            )
+
+        total = qs.count()
+        start_idx = (page - 1) * page_size
+        page_items = qs[start_idx:start_idx + page_size]
+
+        results = []
+        for m in page_items:
+            first_photo = m.photos.first()
+            publication_distance_km = None
+            if (
+                m.latitude is not None and m.longitude is not None
+                and m.publication_latitude is not None and m.publication_longitude is not None
+            ):
+                publication_distance_km = round(
+                    haversine_km(m.latitude, m.longitude, m.publication_latitude, m.publication_longitude),
+                    1,
+                )
+            results.append({
+                'id': str(m.id),
+                'titre': m.titre,
+                'ville': m.ville,
+                'adresse': m.adresse,
+                'prix_location': str(m.prix_location),
+                'statut': m.statut,
+                'statut_display': dict(Maison.STATUT_PUBLICATION).get(m.statut, m.statut),
+                'raison_rejet': m.raison_rejet,
+                'views_count': m.views_count,
+                'date_publication': m.date_publication.isoformat() if m.date_publication else None,
+                'created_at': m.created_at.isoformat(),
+                'photo_principale': (
+                    request.build_absolute_uri(first_photo.image.url)
+                    if first_photo and first_photo.image else None
+                ),
+                'latitude': m.latitude,
+                'longitude': m.longitude,
+                'publication_latitude': m.publication_latitude,
+                'publication_longitude': m.publication_longitude,
+                'publication_distance_km': publication_distance_km,
+                'proprietaire': {
+                    'id': str(m.proprietaire_id),
+                    'name': m.proprietaire.name,
+                    'email': m.proprietaire.email,
+                    'role': m.proprietaire.role,
+                },
+            })
+
+        return Response({
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+            'results': results,
+        })
+
+
+class AdminCommentsListView(APIView):
+    """Liste paginée de tous les commentaires (toutes annonces) pour modération admin."""
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        search = request.query_params.get('search', '').strip()
+        maison_id = request.query_params.get('maison_id')
+
+        try:
+            page = max(1, int(request.query_params.get('page', 1)))
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(100, max(1, int(request.query_params.get('page_size', 25))))
+        except ValueError:
+            page_size = 25
+
+        qs = (
+            Commentaire.objects
+            .select_related('auteur', 'maison')
+            .prefetch_related('pieces_jointes')
+            .all()
+        )
+        if maison_id:
+            qs = qs.filter(maison_id=maison_id)
+        if search:
+            qs = qs.filter(
+                Q(contenu__icontains=search)
+                | Q(auteur__name__icontains=search)
+                | Q(auteur__email__icontains=search)
+                | Q(maison__titre__icontains=search)
+            )
+
+        total = qs.count()
+        start_idx = (page - 1) * page_size
+        page_items = qs[start_idx:start_idx + page_size]
+
+        results = []
+        for c in page_items:
+            results.append({
+                'id': str(c.id),
+                'contenu': c.contenu,
+                'created_at': c.created_at.isoformat(),
+                'auteur': {
+                    'id': str(c.auteur_id),
+                    'name': c.auteur.name,
+                    'email': c.auteur.email,
+                    'role': c.auteur.role,
+                },
+                'maison': {
+                    'id': str(c.maison_id),
+                    'titre': c.maison.titre,
+                },
+                'pieces_jointes_count': c.pieces_jointes.count(),
+            })
+
+        return Response({
+            'count': total,
+            'page': page,
+            'page_size': page_size,
+            'results': results,
         })
 
 

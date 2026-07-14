@@ -49,9 +49,13 @@ class MaisonSerializer(serializers.ModelSerializer):
             'adresse', 'ville', 'code_postal', 'statut',
             'date_publication', 'raison_rejet', 'created_at',
             'photos_count', 'photos', 'latitude', 'longitude',
+            'publication_latitude', 'publication_longitude',
             'views_count',
         )
-        read_only_fields = ('id', 'statut', 'date_publication', 'raison_rejet', 'created_at', 'views_count')
+        read_only_fields = (
+            'id', 'statut', 'date_publication', 'raison_rejet', 'created_at', 'views_count',
+            'publication_latitude', 'publication_longitude',
+        )
 
     def get_photos_count(self, obj):
         return obj.photos.count()
@@ -62,12 +66,46 @@ class MaisonSerializer(serializers.ModelSerializer):
 
 
 class MaisonCreateSerializer(serializers.ModelSerializer):
+    # Position choisie manuellement sur la carte par l'annonceur — remplace le géocodage
+    # automatique de l'adresse quand fournie (plus fiable, notamment si l'adresse texte
+    # est imprécise ou si le géocodage échoue).
+    latitude = serializers.FloatField(required=False, allow_null=True, min_value=-90, max_value=90)
+    longitude = serializers.FloatField(required=False, allow_null=True, min_value=-180, max_value=180)
+    # Position GPS de l'appareil au moment de la publication (traçabilité anti-fraude :
+    # permet de savoir si l'annonceur publie depuis le bien ou depuis ailleurs).
+    publication_latitude = serializers.FloatField(required=False, allow_null=True, min_value=-90, max_value=90)
+    publication_longitude = serializers.FloatField(required=False, allow_null=True, min_value=-180, max_value=180)
+
     class Meta:
         model = Maison
         fields = (
             'titre', 'description', 'prix_location',
             'adresse', 'ville', 'code_postal',
+            'latitude', 'longitude',
+            'publication_latitude', 'publication_longitude',
         )
+
+
+class GeocodePreviewView(APIView):
+    """
+    Géocode une adresse à la volée (aperçu), pour recentrer la carte pendant la saisie du
+    formulaire d'annonce avant même l'enregistrement. Résultat non persisté.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        adresse = request.query_params.get('adresse', '').strip()
+        ville = request.query_params.get('ville', '').strip()
+        code_postal = request.query_params.get('code_postal', '').strip()
+
+        if not ville:
+            return Response({'error': 'Le champ ville est requis.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        coords = geocode_address(adresse, ville, code_postal)
+        if not coords:
+            return Response({'error': 'Adresse introuvable.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({'latitude': coords[0], 'longitude': coords[1]})
 
 
 class OwnerDashboardStatsView(APIView):
@@ -114,11 +152,16 @@ class OwnerMaisonsListView(APIView):
         serializer = MaisonCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        has_manual_position = (
+            serializer.validated_data.get('latitude') is not None
+            and serializer.validated_data.get('longitude') is not None
+        )
         maison = serializer.save(proprietaire=request.user, statut='brouillon')
-        coords = geocode_address(maison.adresse, maison.ville, maison.code_postal)
-        if coords:
-            maison.latitude, maison.longitude = coords
-            maison.save(update_fields=['latitude', 'longitude'])
+        if not has_manual_position:
+            coords = geocode_address(maison.adresse, maison.ville, maison.code_postal)
+            if coords:
+                maison.latitude, maison.longitude = coords
+                maison.save(update_fields=['latitude', 'longitude'])
         return Response(
             MaisonSerializer(maison, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
@@ -151,9 +194,15 @@ class OwnerMaisonDetailView(APIView):
         serializer = MaisonCreateSerializer(maison, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        has_manual_position = (
+            'latitude' in request.data
+            and 'longitude' in request.data
+            and serializer.validated_data.get('latitude') is not None
+            and serializer.validated_data.get('longitude') is not None
+        )
         serializer.save()
         maison.refresh_from_db()
-        if maison.adresse != old_adresse or maison.ville != old_ville:
+        if not has_manual_position and (maison.adresse != old_adresse or maison.ville != old_ville):
             coords = geocode_address(maison.adresse, maison.ville, maison.code_postal)
             if coords:
                 maison.latitude, maison.longitude = coords
